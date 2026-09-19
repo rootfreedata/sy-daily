@@ -45,7 +45,7 @@ export async function embeddingDeduplicate(
   if (items.length === 0) return [];
 
   const threshold = Number(process.env.EMBEDDING_DEDUP_THRESHOLD ?? 0.85);
-  // Throws if OPENAI_API_KEY is missing → caller falls back to LLM dedup.
+  // Throws if no embedding endpoint/key is configured → caller falls back to LLM dedup.
   const embeddings = await getEmbeddings(items);
 
   const clusters: Cluster[] = [];
