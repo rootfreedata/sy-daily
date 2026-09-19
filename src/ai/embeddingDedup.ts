@@ -1,12 +1,27 @@
 /**
  * Embedding-based deduplication — replaces the (very expensive) multi-round gpt-4.1
- * reasoning-high LLM merge with cheap `text-embedding-3-small` vectors + cosine clustering.
+ * reasoning-high LLM merge with cheap embedding vectors + cosine clustering.
  *
- * For each raw post we embed once, cluster by cosine similarity, then within each cluster
- * keep the most comprehensive post as the representative and union all source URLs. This
- * yields the same `SimplifiedNewsItem[]` shape the downstream Summarize stage expects, at a
- * tiny fraction of the token cost. Any failure propagates to the caller, which falls back to
- * the original LLM dedup path.
+ * For each raw post we embed once (see embedding.ts for the provider setup), cluster by
+ * cosine similarity, then within each cluster keep the most comprehensive post as the
+ * representative and union all source URLs. This yields the same `SimplifiedNewsItem[]`
+ * shape the downstream Summarize stage expects, at a tiny fraction of the token cost.
+ * Any failure propagates to the caller, which falls back to the original LLM dedup path.
+ *
+ * Threshold calibration (measured against the live endpoints, 2026-09-19):
+ *
+ *   pair type                     Qwen text-embedding-v4   Zhipu embedding-3
+ *   ----------------------------------------------------- ------------------
+ *   same event, reworded                       0.967              0.903
+ *   same event, more/less detail               0.826              0.851   <- must merge
+ *   same topic, different event                0.678              0.639   <- must NOT merge
+ *   same domain, unrelated                     0.580              0.564
+ *   unrelated                                  0.282              0.311
+ *
+ * 0.78 sits in the gap between the two bold rows for *both* providers, which is why it is the
+ * default rather than the original 0.85 — at 0.85 a genuine same-event pair with differing
+ * detail (0.826) fell just below the line and was missed. Set EMBEDDING_DEDUP_THRESHOLD to
+ * re-tune; re-measure whenever you change provider or model.
  */
 import { getEmbeddings } from "./embedding";
 import { SimplifiedNewsItem } from "../types";
@@ -44,8 +59,10 @@ export async function embeddingDeduplicate(
 ): Promise<SimplifiedNewsItem[]> {
   if (items.length === 0) return [];
 
-  const threshold = Number(process.env.EMBEDDING_DEDUP_THRESHOLD ?? 0.85);
-  // Throws if no embedding endpoint/key is configured → caller falls back to LLM dedup.
+  // Default 0.78 — see the calibration table in the file header. Provider-agnostic.
+  const threshold = Number(process.env.EMBEDDING_DEDUP_THRESHOLD ?? 0.78);
+  // Throws if no embedding endpoint/key is configured, or if the provider returns
+  // degenerate vectors → caller falls back to the original LLM dedup path.
   const embeddings = await getEmbeddings(items);
 
   const clusters: Cluster[] = [];
